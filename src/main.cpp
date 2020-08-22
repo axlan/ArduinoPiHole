@@ -9,12 +9,152 @@
 
 #include <WiFiClient.h>
 
-ESP8266WiFiMulti WiFiMulti;
-String mainURL ="http://192.168.1.110";
+#include "config.h"
 
-#define WIFI_SSID ""
-#define WIFI_PASS ""
-#define PERSISTANT_KEY "persistentlogin="
+ESP8266WiFiMulti WiFiMulti;
+
+
+
+
+#ifdef DEBUG_PI_HOLE
+#ifdef DEBUG_PI_HOLE_PORT
+#define DEBUG_PI_HOLE_PRINT(fmt, ...) DEBUG_PI_HOLE_PORT.printf_P( (PGM_P)PSTR(fmt), ## __VA_ARGS__ )
+#endif
+#endif
+
+#ifndef DEBUG_PI_HOLE_PRINT
+#define DEBUG_PI_HOLE_PRINT(...) do { (void)0; } while (0)
+#endif
+
+class PiHoleCtrl {
+
+public:
+  PiHoleCtrl(const String &server_address, const String &persistent_key):
+    _index_url("http://" + server_address + "/admin/index.php"),
+    _group_url("http://" + server_address + "/admin/scripts/pi-hole/php/groups.php"),
+    _persistent_key_cookie("persistentlogin=" + persistent_key + ";") {}
+
+  bool enable_blacklist(WiFiClient &client, const String &name, bool is_enabled) {
+    if (_token.length() == 0) {
+      if (!get_token(client)) {
+        return false;
+      } 
+    }
+    return true;
+  }
+
+  bool get_blacklist_group(WiFiClient &client) {
+    if (_token.length() == 0) {
+      if (!get_token(client)) {
+        return false;
+      } 
+    }
+    String data = GET_BLACKLISTS + _token;
+    HTTPClient http;
+    DEBUG_PI_HOLE_PRINT("[PI] get_blacklist_group");
+    if (make_req(client, http, Method::POST, _group_url, &data)) {
+      DEBUG_PI_HOLE_PRINT("[PI] out: %s\n", http.getString().c_str());
+      http.end();
+    }
+    return false;
+  }
+    
+
+private:
+
+  enum Method { GET, POST };
+
+  bool make_req(WiFiClient &client, HTTPClient &http, Method method, const String &url, String *payload=nullptr) {
+    
+    if (!http.begin(client, url)) {
+      DEBUG_PI_HOLE_PRINT("[PI} Unable to connect\n");
+      return false;
+    }
+    
+    if (_php_session_cookie.length() > 0) {
+      http.addHeader("Cookie", _persistent_key_cookie + " " + _php_session_cookie);
+    } else {
+      http.addHeader("Cookie", _persistent_key_cookie);
+    }
+    http.addHeader("Content-type", "application/x-www-form-urlencoded; charset=UTF-8");
+
+    const char * headers[] = {"Set-Cookie"};
+    DEBUG_PI_HOLE_PRINT("[PI] SEND...");
+    http.collectHeaders(headers, 1);
+    int httpCode;
+    // start connection and send HTTP header
+    switch(method)
+    {
+        case GET:
+          httpCode = http.GET();
+          break;
+        case POST:
+          httpCode = http.POST(*payload);
+          break;
+        default:
+          httpCode = -1;
+          break;
+    }
+
+    // HTTP header has been send and Server response header has been handled
+    // httpCode will be negative on error
+    if (httpCode > 0) {
+      DEBUG_PI_HOLE_PRINT("[PI] size: %d...", http.getSize());
+      // file found at server
+      if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+        return true;
+      } else {
+        DEBUG_PI_HOLE_PRINT("[PI] bad code: %d\n", httpCode);
+      }
+    } else {
+      DEBUG_PI_HOLE_PRINT("[PI] SEND... failed, error: %s\n", http.errorToString(httpCode).c_str());
+    }
+    http.end();
+    return false;
+  }
+
+  bool get_token(WiFiClient &client){
+    HTTPClient http;
+    DEBUG_PI_HOLE_PRINT("[PI] get_token\n");
+    if (make_req(client, http, Method::GET, _index_url)) {
+      WiFiClient* payload_client = http.getStreamPtr();
+      if (http.hasHeader("Set-Cookie")) {
+        //PHPSESSID=f0ahlhjddv4jrg2v4i400pe8c2; path=/,persistentlogin=35ca35cbae1861dfad63fe000578de08e4409c5450f7d6310ad7e4c834a4fce7; expires=Fri, 28-Aug-2020 23:34:02 GMT; Max-Age=604800
+        if (http.header("Set-Cookie").startsWith("PHPSESSID=")) {
+            _php_session_cookie = http.header("Set-Cookie").substring(0, 37);
+            DEBUG_PI_HOLE_PRINT("[PI] session: %s...", _php_session_cookie.c_str());
+            while (payload_client->available()) {
+              String line = payload_client->readStringUntil('\n');
+              //<div id="token" hidden>dzRSDSIG9GCwSTehSoM7pLW2+vcTmHWy6nsql69+Bac=</div>
+              if (line.startsWith("<div id=\"token\"")) {
+                // replace = with %3D
+                _token = line.substring(23, 66) + "%3D";
+                DEBUG_PI_HOLE_PRINT("[PI] token: %s\n", _token.c_str());
+                http.end();
+                return true;
+              }
+            }
+            DEBUG_PI_HOLE_PRINT("[PI] no token\n");
+        } else {
+          DEBUG_PI_HOLE_PRINT("[PI] no PHPSESSID in %s\n", http.header("Set-Cookie").c_str());
+        }
+      } else {
+        DEBUG_PI_HOLE_PRINT("[PI] no cookies\n");
+      }
+      http.end();
+    }
+    return false;
+  }
+
+  const String _index_url;
+  const String _group_url;
+  const String _persistent_key_cookie;
+  const char* GET_BLACKLISTS = "action=get_domains&showtype=black&token="; 
+  String _token;
+  String _php_session_cookie;
+};
+
+PiHoleCtrl* pi_ctrl;
 
 void setup() {
 
@@ -34,94 +174,18 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFiMulti.addAP(WIFI_SSID, WIFI_PASS);
 
+  pi_ctrl = new PiHoleCtrl(PI_HOLE_HOST, PERSISTANT_KEY);
+
 }
 
-#define LINE_BUFFER_SIZE  1024
-char line_buffer[LINE_BUFFER_SIZE+1];
-
-int get_next_line(WiFiClient* stream_ptr) {
-  int tail = 0;
-  while(true){
-    int c = stream_ptr->read();
-    if (c <= 0) {
-      return c;
-    }
-
-    line_buffer[tail++] = c;
-    if (c == '\n') {
-      line_buffer[tail] = 0;
-      return tail;
-    }
-
-    if (tail == LINE_BUFFER_SIZE) {
-      return -2;
-    }
-  }
-}
 
 void loop() {
   // wait for WiFi connection
   if ((WiFiMulti.run() == WL_CONNECTED)) {
 
     WiFiClient client;
-    HTTPClient http;
-
-    Serial.print("[HTTP] begin...");
-    if (http.begin(client, mainURL+"/admin/index.php")) {  // HTTP
-    //if (http.begin(client, "192.168.1.103", 8000)) {  // HTTP
-      http.addHeader("Cookie", PERSISTANT_KEY);
-
-      const char * headers[] = {"Set-Cookie"};
-      Serial.print("[HTTP] GET...");
-      http.collectHeaders(headers, 1);
-      // start connection and send HTTP header
-      int httpCode = http.GET();
-
-      // httpCode will be negative on error
-      if (httpCode > 0) {
-        // HTTP header has been send and Server response header has been handled
-        Serial.printf("[HTTP] GET... code: %d", httpCode);
-        Serial.printf(" size: %d\n", http.getSize());
-
-        // file found at server
-        if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
-          WiFiClient* payload_client = http.getStreamPtr();
-          
-          if (http.hasHeader("Set-Cookie")) {
-            Serial.println(http.header("Set-Cookie"));
-          }
-          while (payload_client->available()) {
-            
-            // code = get_next_line(http.getStreamPtr());
-            // if (code < 0) {
-            //   break;
-            // }
-            // char *ptr = strstr(line_buffer, "Token");
-            // if (ptr != NULL) /* Substring found */
-            // {
-            //   Serial.println(line_buffer);
-            // }
-            String line = payload_client->readStringUntil('\n');
-            //<div id="token" hidden>dzRSDSIG9GCwSTehSoM7pLW2+vcTmHWy6nsql69+Bac=</div>
-            if (line.startsWith("<div id=\"token\"")) {
-              String token = line.substring(23, 67);
-              Serial.println(token);
-              break;
-            }
-          }
-          Serial.println();
-          
-          
-          //Serial.println(code);
-        }
-      } else {
-        Serial.printf("[HTTP] GET... failed, error: %s", http.errorToString(httpCode).c_str());
-      }
-
-      http.end();
-    } else {
-      Serial.printf("[HTTP} Unable to connect");
-    }
+    pi_ctrl->get_blacklist_group(client);
+    
   }
 
   delay(10000);
