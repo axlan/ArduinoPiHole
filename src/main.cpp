@@ -1,19 +1,20 @@
-
+#include <vector>
 
 #include <Arduino.h>
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
-
 #include <ESP8266HTTPClient.h>
-
 #include <WiFiClient.h>
+
+#include <ArduinoJson.h>
 
 #include "config.h"
 
 ESP8266WiFiMulti WiFiMulti;
 
 
+// initial stack
+char *stack_start;
 
 
 #ifdef DEBUG_PI_HOLE
@@ -25,6 +26,8 @@ ESP8266WiFiMulti WiFiMulti;
 #ifndef DEBUG_PI_HOLE_PRINT
 #define DEBUG_PI_HOLE_PRINT(...) do { (void)0; } while (0)
 #endif
+
+StaticJsonDocument<2048> json_doc;
 
 class PiHoleCtrl {
 
@@ -45,22 +48,53 @@ public:
 
   bool get_blacklist_group(WiFiClient &client) {
     if (_token.length() == 0) {
-      if (!get_token(client)) {
-        return false;
-      } 
+      get_token(client);
+      return false;
     }
     String data = GET_BLACKLISTS + _token;
     HTTPClient http;
-    DEBUG_PI_HOLE_PRINT("[PI] get_blacklist_group");
+    DEBUG_PI_HOLE_PRINT("[PI] get_blacklist_group...");
     if (make_req(client, http, Method::POST, _group_url, &data)) {
-      DEBUG_PI_HOLE_PRINT("[PI] out: %s\n", http.getString().c_str());
+      data = http.getString();
+      // DEBUG_PI_HOLE_PRINT("[PI] blacklists %s \n", data.c_str());
+      DeserializationError error = deserializeJson(json_doc, data);
+      if (!error) {
+        DEBUG_PI_HOLE_PRINT("[PI] blacklists: ");
+        //{"data":[{"id":2,"type":3,"domain":"(\\.|^)reddit\\.com$","enabled":0,"date_added":1597384685,"date_modified":1597622169,"comment":"reddit","groups":[0]},{"id":3,"type":1,"domain":"vpn.swiftnav.com","enabled":0,"date_added":1597385916,"date_modified":1597430138,"comment":null,"groups":[0]}]}
+        JsonArray items = json_doc["data"].as<JsonArray>();
+        _blacklist_items.clear();
+        for(JsonVariant v : items) {
+          BlackListItem item = {
+            v["id"],
+            v["type"],
+            v["comment"],
+            v["enabled"]};
+          _blacklist_items.push_back(item);
+          DEBUG_PI_HOLE_PRINT("%s, ", item.comment.c_str());
+        }
+        DEBUG_PI_HOLE_PRINT("\n");
+        http.end();
+        return true;
+      } else {
+        _token.clear();
+        _php_session_cookie.clear();
+        DEBUG_PI_HOLE_PRINT("[PI] json failed: %s\n", error.c_str());
+      }
       http.end();
+      return true;
     }
     return false;
   }
     
 
 private:
+
+  struct BlackListItem {
+    int id;
+    int type;
+    String comment;
+    bool enabled;
+  };
 
   enum Method { GET, POST };
 
@@ -152,11 +186,14 @@ private:
   const char* GET_BLACKLISTS = "action=get_domains&showtype=black&token="; 
   String _token;
   String _php_session_cookie;
+  std::vector<BlackListItem> _blacklist_items;
 };
 
 PiHoleCtrl* pi_ctrl;
 
 void setup() {
+  char stack;
+  stack_start = &stack;
 
   Serial.begin(115200);
   // Serial.setDebugOutput(true);
@@ -185,6 +222,10 @@ void loop() {
 
     WiFiClient client;
     pi_ctrl->get_blacklist_group(client);
+
+    char stack;
+    Serial.printf("[SYS] heap: %d\n", system_get_free_heap_size());
+    Serial.printf("[SYS] stack: %d\n", stack_start - &stack);
     
   }
 
