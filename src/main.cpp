@@ -27,8 +27,6 @@ char *stack_start;
 #define DEBUG_PI_HOLE_PRINT(...) do { (void)0; } while (0)
 #endif
 
-StaticJsonDocument<2048> json_doc;
-
 class PiHoleCtrl {
 
 public:
@@ -75,13 +73,13 @@ public:
     HTTPClient http;
     DEBUG_PI_HOLE_PRINT("[PI] get_blacklist_group...");
     if (make_req(client, http, Method::POST, _group_url, &data)) {
-      data = http.getString();
+      // data = http.getString();
       // DEBUG_PI_HOLE_PRINT("[PI] blacklists %s \n", data.c_str());
-      DeserializationError error = deserializeJson(json_doc, data);
+      DeserializationError error = deserializeJson(_json_doc, http.getStream());
       if (!error) {
         DEBUG_PI_HOLE_PRINT("[PI] blacklists: ");
         //{"data":[{"id":2,"type":3,"domain":"(\\.|^)reddit\\.com$","enabled":0,"date_added":1597384685,"date_modified":1597622169,"comment":"reddit","groups":[0]},{"id":3,"type":1,"domain":"vpn.swiftnav.com","enabled":0,"date_added":1597385916,"date_modified":1597430138,"comment":null,"groups":[0]}]}
-        JsonArray items = json_doc["data"].as<JsonArray>();
+        JsonArray items = _json_doc["data"].as<JsonArray>();
         _blacklist_items.clear();
         for(JsonVariant v : items) {
           BlackListItem item = {
@@ -208,6 +206,7 @@ private:
   String _token;
   String _php_session_cookie;
   std::vector<BlackListItem> _blacklist_items;
+  StaticJsonDocument<1024> _json_doc;
 
 public:
   const std::vector<BlackListItem>& get_blacklist_items() {
