@@ -38,12 +38,32 @@ public:
     _persistent_key_cookie("persistentlogin=" + persistent_key + ";") {}
 
   bool enable_blacklist(WiFiClient &client, const String &name, bool is_enabled) {
-    if (_token.length() == 0) {
-      if (!get_token(client)) {
-        return false;
-      } 
+    const BlackListItem* target_item = nullptr; 
+    for(const BlackListItem &item : _blacklist_items) {
+      if (item.comment.compareTo(name) == 0) {
+        target_item = &item;
+        break;
+      }
     }
-    return true;
+    if (target_item == nullptr) {
+      return false;
+    }
+
+    DEBUG_PI_HOLE_PRINT("[PI] enable_blacklist...");
+    String data = "action=edit_domain&id=" + String(target_item->id) + 
+      "&type=" + String(target_item->type) +
+      "&comment=" + name +
+      "&status=" + String(is_enabled) +
+      "&token=" + _token;
+    DEBUG_PI_HOLE_PRINT("[PI] %s...", data.c_str());
+    HTTPClient http;
+    if (make_req(client, http, Method::POST, _group_url, &data)) {
+      data = http.getString();
+      DEBUG_PI_HOLE_PRINT("[PI] %s \n", data.c_str());
+      http.end();
+      return data.compareTo("{\"success\":true,\"message\":null}") == 0;
+    }
+    return false;
   }
 
   bool get_blacklist_group(WiFiClient &client) {
@@ -85,7 +105,7 @@ public:
     }
     return false;
   }
-    
+
 
 private:
 
@@ -163,6 +183,7 @@ private:
               if (line.startsWith("<div id=\"token\"")) {
                 // replace = with %3D
                 _token = line.substring(23, 66) + "%3D";
+                _token.replace("+", "%2B");
                 DEBUG_PI_HOLE_PRINT("[PI] token: %s\n", _token.c_str());
                 http.end();
                 return true;
@@ -183,10 +204,15 @@ private:
   const String _index_url;
   const String _group_url;
   const String _persistent_key_cookie;
-  const char* GET_BLACKLISTS = "action=get_domains&showtype=black&token="; 
+  const char* GET_BLACKLISTS = "action=get_domains&showtype=black&token=";
   String _token;
   String _php_session_cookie;
   std::vector<BlackListItem> _blacklist_items;
+
+public:
+  const std::vector<BlackListItem>& get_blacklist_items() {
+    return _blacklist_items;
+  }
 };
 
 PiHoleCtrl* pi_ctrl;
@@ -221,11 +247,13 @@ void loop() {
   if ((WiFiMulti.run() == WL_CONNECTED)) {
 
     WiFiClient client;
-    pi_ctrl->get_blacklist_group(client);
+    if (pi_ctrl->get_blacklist_items().size() > 0) {
+      pi_ctrl->enable_blacklist(client, "reddit", false);
+    } else {
+      pi_ctrl->get_blacklist_group(client);
+    }
 
-    char stack;
     Serial.printf("[SYS] heap: %d\n", system_get_free_heap_size());
-    Serial.printf("[SYS] stack: %d\n", stack_start - &stack);
     
   }
 

@@ -69,7 +69,3 @@ class PiHoleControl():
             print(f'Domain not found matching comment: {comment}')
             return
         self.set_blacklist_item_by_id(domain['id'], domain['type'], comment, enable)
-
-
-ctrl = PiHoleControl('192.168.1.110', '35ca35cbae1861dfad63fe000578de08e4409c5450f7d6310ad7e4c834a4fce7')
-print(ctrl.get_blacklist_group())
