@@ -64,14 +64,14 @@ public:
     return false;
   }
 
-  bool get_blacklist_group(WiFiClient &client) {
+  bool get_blacklists(WiFiClient &client) {
     if (_token.length() == 0) {
       get_token(client);
       return false;
     }
     String data = GET_BLACKLISTS + _token;
     HTTPClient http;
-    DEBUG_PI_HOLE_PRINT("[PI] get_blacklist_group...");
+    DEBUG_PI_HOLE_PRINT("[PI] get_blacklists...");
     if (make_req(client, http, Method::POST, _group_url, &data)) {
       // data = http.getString();
       // DEBUG_PI_HOLE_PRINT("[PI] blacklists %s \n", data.c_str());
@@ -104,6 +104,76 @@ public:
     return false;
   }
 
+  
+  bool enable_group(WiFiClient &client, const String &name, bool is_enabled) {
+    const GroupItem* target_item = nullptr; 
+    for(const GroupItem &item : _group_items) {
+      if (item.name.compareTo(name) == 0) {
+        target_item = &item;
+        break;
+      }
+    }
+    if (target_item == nullptr) {
+      return false;
+    }
+
+    DEBUG_PI_HOLE_PRINT("[PI] enable_group...");
+    String data = "action=edit_group&id=" + String(target_item->id) + 
+      "&name=" + name +
+      "&desc=" + target_item->description +
+      "&status=" + String(is_enabled) +
+      "&token=" + _token;
+    DEBUG_PI_HOLE_PRINT("[PI] %s...", data.c_str());
+    HTTPClient http;
+    if (make_req(client, http, Method::POST, _group_url, &data)) {
+      data = http.getString();
+      DEBUG_PI_HOLE_PRINT("[PI] %s \n", data.c_str());
+      http.end();
+      return data.compareTo("{\"success\":true,\"message\":null}") == 0;
+    }
+    return false;
+  }
+
+  bool get_groups(WiFiClient &client) {
+    if (_token.length() == 0) {
+      get_token(client);
+      return false;
+    }
+    String data = GET_GROUPS + _token;
+    HTTPClient http;
+    DEBUG_PI_HOLE_PRINT("[PI] get_groups...");
+    if (make_req(client, http, Method::POST, _group_url, &data)) {
+      // data = http.getString();
+      // DEBUG_PI_HOLE_PRINT("[PI] blacklists %s \n", data.c_str());
+      DeserializationError error = deserializeJson(_json_doc, http.getStream());
+      if (!error) {
+        DEBUG_PI_HOLE_PRINT("[PI] groups: ");
+        //{"data":[{"id":2,"type":3,"domain":"(\\.|^)reddit\\.com$","enabled":0,"date_added":1597384685,"date_modified":1597622169,"comment":"reddit","groups":[0]},{"id":3,"type":1,"domain":"vpn.swiftnav.com","enabled":0,"date_added":1597385916,"date_modified":1597430138,"comment":null,"groups":[0]}]}
+        JsonArray items = _json_doc["data"].as<JsonArray>();
+        _group_items.clear();
+        for(JsonVariant v : items) {
+          GroupItem item = {
+            v["id"],
+            v["name"],
+            v["description"],
+            v["enabled"]};
+          _group_items.push_back(item);
+          DEBUG_PI_HOLE_PRINT("%s, ", item.name.c_str());
+        }
+        DEBUG_PI_HOLE_PRINT("\n");
+        http.end();
+        return true;
+      } else {
+        _token.clear();
+        _php_session_cookie.clear();
+        DEBUG_PI_HOLE_PRINT("[PI] json failed: %s\n", error.c_str());
+      }
+      http.end();
+      return true;
+    }
+    return false;
+  }
+
 
 private:
 
@@ -111,6 +181,13 @@ private:
     int id;
     int type;
     String comment;
+    bool enabled;
+  };
+
+  struct GroupItem {
+    int id;
+    String name;
+    String description;
     bool enabled;
   };
 
@@ -203,14 +280,19 @@ private:
   const String _group_url;
   const String _persistent_key_cookie;
   const char* GET_BLACKLISTS = "action=get_domains&showtype=black&token=";
+  const char* GET_GROUPS = "action=get_groups&token=";
   String _token;
   String _php_session_cookie;
   std::vector<BlackListItem> _blacklist_items;
+  std::vector<GroupItem> _group_items;
   StaticJsonDocument<1024> _json_doc;
 
 public:
   const std::vector<BlackListItem>& get_blacklist_items() {
     return _blacklist_items;
+  }
+  const std::vector<GroupItem>& get_group_items() {
+    return _group_items;
   }
 };
 
@@ -246,10 +328,10 @@ void loop() {
   if ((WiFiMulti.run() == WL_CONNECTED)) {
 
     WiFiClient client;
-    if (pi_ctrl->get_blacklist_items().size() > 0) {
-      pi_ctrl->enable_blacklist(client, "reddit", false);
+    if (pi_ctrl->get_group_items().size() > 0) {
+      pi_ctrl->enable_group(client, "fun", true);
     } else {
-      pi_ctrl->get_blacklist_group(client);
+      pi_ctrl->get_groups(client);
     }
 
     Serial.printf("[SYS] heap: %d\n", system_get_free_heap_size());

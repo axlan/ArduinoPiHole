@@ -1,4 +1,5 @@
 import re
+import sys
 import urllib.parse
 
 import requests
@@ -50,6 +51,33 @@ class PiHoleControl():
         print(resp.headers.items())
         return resp.json()['data']
 
+    def get_groups(self):
+        data = f'action=get_groups&token={self.token}'
+        # {"data":[{"id":0,"enabled":1,"name":"Default","date_added":1597376555,"date_modified":1597376555,"description":"The default group"},{"id":1,"enabled":1,"name":"fun","date_added":1597427317,"date_modified":1598488617,"description":null},{"id":3,"enabled":0,"name":"work","date_added":1597427368,"date_modified":1598488594,"description":null}]}
+        resp = self.session.post(f'http://{self.host}/admin/scripts/pi-hole/php/groups.php', headers=PiHoleControl.headers, data=data)
+        return resp.json()['data']
+
+    def set_group_by_id(self, id, name, enable, desc=""):
+        if enable:
+            status = 1
+        else:
+            status = 0
+        data = f'action=edit_group&id={id}&name={name}&desc={desc}&status={status}&token={self.token}'
+        resp = self.session.post(f'http://{self.host}/admin/scripts/pi-hole/php/groups.php', headers=PiHoleControl.headers, data=data)
+        print(resp.json())
+
+    def set_group_by_name(self, name, enable):
+        groups = self.get_groups()
+        group = None
+        for val in groups:
+            if val['name'] == name:
+                group = val
+                break
+        if group is None:
+            print(f'Name not found matching comment: {name}')
+            return
+        self.set_group_by_id(group['id'], name, enable, group['description'])
+
     def set_blacklist_item_by_id(self, item_id, item_type, comment, enable):
         if enable:
             status = 1
@@ -69,3 +97,26 @@ class PiHoleControl():
             print(f'Domain not found matching comment: {comment}')
             return
         self.set_blacklist_item_by_id(domain['id'], domain['type'], comment, enable)
+
+def main():
+    config_file = sys.argv[1]
+
+    host_re = re.compile(r'#define PI_HOLE_HOST "(.+)"')
+    key_re = re.compile(r'#define PERSISTANT_KEY "(.+)"')
+    with open(config_file) as fd:
+        for line in fd.readlines():
+            m = host_re.match(line)
+            if m:
+                host = m.group(1)
+            m = key_re.match(line)
+            if m:
+                key = m.group(1)
+
+    ctrl = PiHoleControl(host, key)
+    ctrl.set_group_by_name('fun', False)
+
+if __name__ == '__main__':
+    main()
+
+
+
